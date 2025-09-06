@@ -1,10 +1,13 @@
 from typing import Any, List
 
 import pytest
+from unittest.mock import AsyncMock, MagicMock
 from llama_index.core.agent.workflow import AgentInput
+from llama_index.core.agent.workflow.base_agent import BaseWorkflowAgent
 from llama_index.core.agent.workflow.function_agent import FunctionAgent
 from llama_index.core.agent.workflow.multi_agent_workflow import AgentWorkflow
 from llama_index.core.agent.workflow.react_agent import ReActAgent
+from llama_index.core.agent.workflow.workflow_events import AgentOutput, ToolCallResult
 from llama_index.core.llms import (
     ChatMessage,
     ChatResponse,
@@ -13,8 +16,8 @@ from llama_index.core.llms import (
     MessageRole,
     MockLLM,
 )
-from llama_index.core.memory import ChatMemoryBuffer
-from llama_index.core.tools import FunctionTool, ToolSelection
+from llama_index.core.memory import ChatMemoryBuffer, BaseMemory
+from llama_index.core.tools import FunctionTool, ToolSelection, ToolOutput
 from llama_index.core.workflow import (
     Context,
     WorkflowRuntimeError,
@@ -73,6 +76,22 @@ class MockLLM(MockLLM):
         self, response: ChatResponse, **kwargs: Any
     ) -> List[ToolSelection]:
         return response.message.additional_kwargs.get("tool_calls", [])
+
+
+class SimpleAgent(BaseWorkflowAgent):
+    async def take_step(self, ctx, llm_input, tools, memory):
+        return AgentOutput(
+            response=ChatMessage(role="assistant", content="test"),
+            tool_calls=[],
+            raw="test",
+            current_agent_name=self.name,
+        )
+
+    async def handle_tool_call_results(self, ctx, results, memory):
+        pass
+
+    async def finalize(self, ctx, output, memory):
+        return output
 
 
 def add(a: int, b: int) -> int:
@@ -533,3 +552,48 @@ async def test_retry():
     response = await handler
 
     assert "8" in str(response.response)
+
+
+@pytest.mark.asyncio
+async def test_aggregate_tool_results_return_direct_sets_flag():
+    agent = SimpleAgent(name="simple", description="test", tools=[], llm=None)
+    workflow = AgentWorkflow(agents=[agent], root_agent="simple")
+
+    ctx = MagicMock(spec=Context)
+    ctx.store = AsyncMock()
+    ctx.store.get = AsyncMock()
+    ctx.store.set = AsyncMock()
+    ctx.collect_events = MagicMock()
+
+    mock_memory = MagicMock(spec=BaseMemory)
+    mock_memory.aget = AsyncMock(return_value=[])
+
+    tool_output = ToolOutput(
+        content="ok",
+        tool_name="direct_tool",
+        raw_input={},
+        raw_output="ok",
+        is_error=False,
+    )
+    return_direct_tool = ToolCallResult(
+        tool_name="direct_tool",
+        tool_kwargs={},
+        tool_id="tool_123",
+        tool_output=tool_output,
+        return_direct=True,
+    )
+
+    ctx.collect_events.return_value = [return_direct_tool]
+    ctx.store.get.side_effect = lambda key, default=None: {
+        "num_tool_calls": 1,
+        "current_tool_calls": [],
+        "memory": mock_memory,
+        "current_agent_name": "simple",
+        "user_msg_str": "test message",
+        "next_agent": None,
+    }.get(key, default)
+
+    result = await workflow.aggregate_tool_results(ctx, return_direct_tool)
+
+    assert isinstance(result, AgentInput)
+    ctx.store.set.assert_any_call("return_direct_pending", True)
