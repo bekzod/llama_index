@@ -65,12 +65,13 @@ def test_agent():
 
 
 @pytest.mark.asyncio
-async def test_aggregate_tool_results_return_direct_non_handoff_no_error_stops(
+async def test_aggregate_tool_results_return_direct_non_handoff_sets_flag(
     mock_context, mock_memory, test_agent
 ):
     """
-    Test that when return_direct tool is NOT 'handoff' and has NO error,
-    the workflow stops execution by returning StopEvent (lines 564-569)
+    When a non-handoff return_direct tool succeeds the workflow should not
+    stop immediately. Instead, a flag is set so that execution halts after the
+    next LLM pass.
     """
     # Arrange
     tool_output = ToolOutput(
@@ -104,13 +105,14 @@ async def test_aggregate_tool_results_return_direct_non_handoff_no_error_stops(
     result = await test_agent.aggregate_tool_results(mock_context, return_direct_tool)
 
     # Assert
-    # The method should return StopEvent when condition is met
-    assert isinstance(result, StopEvent)
-    assert result.result is not None
-    assert result.result.current_agent_name == "test_agent"
-
-    # Verify that current_tool_calls was cleared (line 567)
-    mock_context.store.set.assert_any_call("current_tool_calls", [])
+    assert isinstance(result, AgentInput)
+    mock_context.store.set.assert_any_call("pending_return_direct", True)
+    calls_to_clear = [
+        call
+        for call in mock_context.store.set.call_args_list
+        if call[0][0] == "current_tool_calls" and call[0][1] == []
+    ]
+    assert len(calls_to_clear) == 0
 
 
 @pytest.mark.asyncio
@@ -275,7 +277,8 @@ async def test_aggregate_tool_results_context_store_operations_for_successful_re
     mock_context, mock_memory, test_agent
 ):
     """
-    Test that context store operations are performed correctly when condition is met (lines 567-568)
+    Test that context store operations are performed correctly when a non-handoff
+    return_direct tool succeeds.
     """
     # Arrange
     tool_output = ToolOutput(
@@ -310,16 +313,14 @@ async def test_aggregate_tool_results_context_store_operations_for_successful_re
     result = await test_agent.aggregate_tool_results(mock_context, success_tool)
 
     # Assert
-    # Verify StopEvent was returned
-    assert isinstance(result, StopEvent)
-    assert result.result is not None
-
-    # Verify context store was called correctly (line 567)
-    mock_context.store.set.assert_any_call("current_tool_calls", [])
-
-    # Verify the result contains the correct information
-    assert result.result.current_agent_name == "test_agent"
-    assert result.result.response.content == "Success"
+    assert isinstance(result, AgentInput)
+    mock_context.store.set.assert_any_call("pending_return_direct", True)
+    calls_to_clear = [
+        call
+        for call in mock_context.store.set.call_args_list
+        if call[0][0] == "current_tool_calls" and call[0][1] == []
+    ]
+    assert len(calls_to_clear) == 0
 
 
 @pytest.mark.asyncio
@@ -380,11 +381,14 @@ async def test_aggregate_tool_results_multiple_tools_one_return_direct_eligible(
     result = await test_agent.aggregate_tool_results(mock_context, success_tool)
 
     # Assert
-    # Should return StopEvent because one tool is eligible
-    assert isinstance(result, StopEvent)
-
-    # Verify context store was called to clear current_tool_calls (line 567)
-    mock_context.store.set.assert_any_call("current_tool_calls", [])
+    assert isinstance(result, AgentInput)
+    mock_context.store.set.assert_any_call("pending_return_direct", True)
+    calls_to_clear = [
+        call
+        for call in mock_context.store.set.call_args_list
+        if call[0][0] == "current_tool_calls" and call[0][1] == []
+    ]
+    assert len(calls_to_clear) == 0
 
 
 @pytest.mark.asyncio

@@ -164,13 +164,9 @@ class FunctionAgent(BaseWorkflowAgent):
                 tool_call_result.return_direct
                 and tool_call_result.tool_name != "handoff"
             ):
-                scratchpad.append(
-                    ChatMessage(
-                        role="assistant",
-                        content=str(tool_call_result.tool_output.content),
-                        additional_kwargs={"tool_call_id": tool_call_result.tool_id},
-                    )
-                )
+                # When a tool requests a direct return we short-circuit
+                # further tool result processing, but we defer final
+                # response generation to the LLM for one final pass.
                 break
 
         await ctx.store.set(self.scratchpad_key, scratchpad)
