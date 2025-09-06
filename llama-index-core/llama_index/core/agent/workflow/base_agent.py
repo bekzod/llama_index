@@ -428,6 +428,10 @@ class BaseWorkflowAgent(
             )
             output.tool_calls.extend(cur_tool_calls)  # type: ignore
 
+            # Emit the finalized output so downstream consumers receive the
+            # complete response before we stop the workflow.
+            ctx.write_event_to_stream(output)
+
             if self.structured_output_fn is not None:
                 try:
                     if inspect.iscoroutinefunction(self.structured_output_fn):
@@ -490,6 +494,10 @@ class BaseWorkflowAgent(
                 "current_tool_calls", default=[]
             )
             output.tool_calls.extend(cur_tool_calls)  # type: ignore
+
+            # Emit the finalized output so downstream consumers receive the
+            # complete response before we stop the workflow.
+            ctx.write_event_to_stream(output)
 
             if self.structured_output_fn is not None:
                 try:
