@@ -417,6 +417,57 @@ class BaseWorkflowAgent(
 
         memory: BaseMemory = await ctx.store.get("memory")
 
+        if await ctx.store.get("pending_return_direct", default=False):
+            # A tool requested a direct return; run one final LLM pass and
+            # stop regardless of any further tool calls.
+            await ctx.store.set("pending_return_direct", False)
+            output = await self.finalize(ctx, ev, memory)
+            messages = await memory.aget()
+            cur_tool_calls: List[ToolCallResult] = await ctx.store.get(
+                "current_tool_calls", default=[]
+            )
+            output.tool_calls.extend(cur_tool_calls)  # type: ignore
+
+            if self.structured_output_fn is not None:
+                try:
+                    if inspect.iscoroutinefunction(self.structured_output_fn):
+                        output.structured_response = await self.structured_output_fn(
+                            messages
+                        )
+                    else:
+                        output.structured_response = cast(
+                            Dict[str, Any], self.structured_output_fn(messages)
+                        )
+                    ctx.write_event_to_stream(
+                        AgentStreamStructuredOutput(output=output.structured_response)
+                    )
+                except Exception as e:
+                    warnings.warn(
+                        f"There was a problem with the generation of the structured output: {e}"
+                    )
+            if self.output_cls is not None:
+                try:
+                    llm_input = [*messages]
+                    if self.system_prompt:
+                        llm_input = [
+                            ChatMessage(role="system", content=self.system_prompt),
+                            *llm_input,
+                        ]
+                    output.structured_response = await generate_structured_response(
+                        messages=llm_input, llm=self.llm, output_cls=self.output_cls
+                    )
+                    ctx.write_event_to_stream(
+                        AgentStreamStructuredOutput(output=output.structured_response)
+                    )
+                except Exception as e:
+                    warnings.warn(
+                        f"There was a problem with the generation of the structured output: {e}"
+                    )
+
+            await ctx.store.set("current_tool_calls", [])
+
+            return StopEvent(result=output)
+
         if ev.retry_messages:
             # Retry with the given messages to let the LLM fix potential errors
             history = await memory.aget()
@@ -560,7 +611,8 @@ class BaseWorkflowAgent(
             tool_call_result.return_direct and not tool_call_result.tool_output.is_error
             for tool_call_result in tool_call_results
         ):
-            # if any tool calls return directly and it's not an error tool call, take the first one
+            # if any tool calls request a direct return and it's not an error
+            # tool call, take the first one
             return_direct_tool = next(
                 tool_call_result
                 for tool_call_result in tool_call_results
@@ -568,28 +620,30 @@ class BaseWorkflowAgent(
                 and not tool_call_result.tool_output.is_error
             )
 
-            # always finalize the agent, even if we're just handing off
-            result = AgentOutput(
-                response=ChatMessage(
-                    role="assistant",
-                    content=return_direct_tool.tool_output.content or "",
-                ),
-                tool_calls=[
-                    ToolSelection(
-                        tool_id=t.tool_id,
-                        tool_name=t.tool_name,
-                        tool_kwargs=t.tool_kwargs,
-                    )
-                    for t in cur_tool_calls
-                ],
-                raw=return_direct_tool.tool_output.raw_output,
-                current_agent_name=self.name,
-            )
-            result = await self.finalize(ctx, result, memory)
-            # we don't want to stop the system if we're just handing off
-            if return_direct_tool.tool_name != "handoff":
-                await ctx.store.set("current_tool_calls", [])
-                return StopEvent(result=result)
+            if return_direct_tool.tool_name == "handoff":
+                # For handoff tools we immediately finalize and allow the
+                # workflow to continue without an additional LLM pass.
+                result = AgentOutput(
+                    response=ChatMessage(
+                        role="assistant",
+                        content=return_direct_tool.tool_output.content or "",
+                    ),
+                    tool_calls=[
+                        ToolSelection(
+                            tool_id=t.tool_id,
+                            tool_name=t.tool_name,
+                            tool_kwargs=t.tool_kwargs,
+                        )
+                        for t in cur_tool_calls
+                    ],
+                    raw=return_direct_tool.tool_output.raw_output,
+                    current_agent_name=self.name,
+                )
+                await self.finalize(ctx, result, memory)
+            else:
+                # Mark that we should stop after the next LLM call which will
+                # generate the final response based on the tool output.
+                await ctx.store.set("pending_return_direct", True)
 
         user_msg_str = await ctx.store.get("user_msg_str")
         input_messages = await memory.aget(input=user_msg_str)
