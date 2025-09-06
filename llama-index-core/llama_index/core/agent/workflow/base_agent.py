@@ -417,6 +417,13 @@ class BaseWorkflowAgent(
 
         memory: BaseMemory = await ctx.store.get("memory")
 
+        return_direct_pending = await ctx.store.get(
+            "return_direct_pending", default=False
+        )
+        if return_direct_pending:
+            await ctx.store.set("return_direct_pending", False)
+            ev.tool_calls = []
+
         if ev.retry_messages:
             # Retry with the given messages to let the LLM fix potential errors
             history = await memory.aget()
@@ -557,39 +564,12 @@ class BaseWorkflowAgent(
         await self.handle_tool_call_results(ctx, tool_call_results, memory)
 
         if any(
-            tool_call_result.return_direct and not tool_call_result.tool_output.is_error
+            tool_call_result.return_direct
+            and tool_call_result.tool_name != "handoff"
+            and not tool_call_result.tool_output.is_error
             for tool_call_result in tool_call_results
         ):
-            # if any tool calls return directly and it's not an error tool call, take the first one
-            return_direct_tool = next(
-                tool_call_result
-                for tool_call_result in tool_call_results
-                if tool_call_result.return_direct
-                and not tool_call_result.tool_output.is_error
-            )
-
-            # always finalize the agent, even if we're just handing off
-            result = AgentOutput(
-                response=ChatMessage(
-                    role="assistant",
-                    content=return_direct_tool.tool_output.content or "",
-                ),
-                tool_calls=[
-                    ToolSelection(
-                        tool_id=t.tool_id,
-                        tool_name=t.tool_name,
-                        tool_kwargs=t.tool_kwargs,
-                    )
-                    for t in cur_tool_calls
-                ],
-                raw=return_direct_tool.tool_output.raw_output,
-                current_agent_name=self.name,
-            )
-            result = await self.finalize(ctx, result, memory)
-            # we don't want to stop the system if we're just handing off
-            if return_direct_tool.tool_name != "handoff":
-                await ctx.store.set("current_tool_calls", [])
-                return StopEvent(result=result)
+            await ctx.store.set("return_direct_pending", True)
 
         user_msg_str = await ctx.store.get("user_msg_str")
         input_messages = await memory.aget(input=user_msg_str)
