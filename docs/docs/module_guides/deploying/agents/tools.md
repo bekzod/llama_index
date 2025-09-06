@@ -162,7 +162,7 @@ agent = FunctionAgent(
 
 ### Return Direct
 
-You'll notice the option `return_direct` in the tool class constructor. If this is set to `True`, the response from an agent is returned directly, without being interpreted and rewritten by the agent. This can be helpful for decreasing runtime, or designing/specifying tools that will end the agent reasoning loop.
+You'll notice the option `return_direct` in the tool class constructor. If this is set to `True`, the agent will perform one final LLM pass using the tool's output before ending the reasoning loop. This allows light post-processing while still short-circuiting additional tool calls.
 
 For example, say you specify a tool:
 
@@ -179,9 +179,9 @@ agent = FunctionAgent(llm=llm, tools=[tool])
 response = await agent.run("<question that invokes tool>")
 ```
 
-In the above example, the query engine tool would be invoked, and the response from that tool would be directly returned as the response, and the execution loop would end.
+In the above example, the query engine tool would be invoked, its result passed back through the LLM once, and the final response returned before the execution loop ends.
 
-If `return_direct=False` was used, then the agent would rewrite the response using the context of the chat history, or even make another tool call.
+If `return_direct=False` was used, then the agent might rewrite the response using the context of the chat history or even make another tool call.
 
 We have also provided an [example notebook](../../../examples/agent/return_direct_agent.ipynb) of using `return_direct`.
 
